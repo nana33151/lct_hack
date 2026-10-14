@@ -1,0 +1,22 @@
+# data.yaml
+train: ./construction_equipment_subset/train/images  # Путь к тренировочным изображениям
+val: ./construction_equipment_subset/valid/images      # Путь к валидационным изображениям
+
+nc: 16  # Количество классов (замените на своё число)
+names: 
+  - Dump truck
+  - Excavator
+  - Motor grader
+  - Roller
+  - Crane manipulator
+  - Gazelle
+  - Forklift Standart
+  - Bucket loader Big
+  - Mixer
+  - Tanker
+  - Bulldozer
+  - Cleaning equipment
+  - Truck
+  - Trailer
+  - Forklift Giraffe
+  - Bucket loader Standart  # Имена классов (замените на свои)

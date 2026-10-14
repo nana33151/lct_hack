@@ -1,0 +1,114 @@
+import os
+import shutil
+from pathlib import Path
+import yaml
+from ultralytics import YOLO
+
+# ============ 1. НАСТРОЙКИ ============
+MODEL_NAME = 'yolov8s.pt'         # 'n' слишком слабая для 16 классов
+DATA_YAML = Path('data.yaml')
+PROJECT_DIR = 'runs/finetune'
+RUN_NAME = 'construction_equipment_subset'
+
+EPOCHS     = 100
+IMGSZ      = 640
+BATCH      = -1                   # -1 = авто-подбор под VRAM
+LR0        = 0.001                # для файн-тюнинга
+PATIENCE   = 20
+WORKERS    = 8
+DEVICE     = 'cpu'                    # 0 или 'cpu', или [0,1] для мульти-GPU
+CACHE      = 'ram'                # False, 'ram' или 'disk'
+
+FINAL_SAVE = 'my_finetuned_yolo.pt'
+
+
+# ============ 2. ПРОВЕРКА ДАТАСЕТА ============
+def check_dataset(yaml_path: Path):
+    print(f"🔎 Проверка {yaml_path}...")
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Не найден {yaml_path}")
+
+    cfg = yaml.safe_load(yaml_path.read_text())
+    root = Path(cfg.get('path', yaml_path.parent)).resolve()
+
+    print(f"  path : {root}")
+    for key in ('train', 'val'):
+        if key not in cfg:
+            raise KeyError(f"В data.yaml нет ключа '{key}'")
+        p = (root / cfg[key]).resolve() if not Path(cfg[key]).is_absolute() else Path(cfg[key])
+        n_imgs = sum(1 for _ in p.glob('*') if _.suffix.lower() in
+                     {'.jpg','.jpeg','.png','.bmp','.tif','.tiff','.webp'})
+        # Проверяем, что рядом есть labels
+        labels_dir = Path(str(p).replace(f'{os.sep}images', f'{os.sep}labels'))
+        n_labels = sum(1 for _ in labels_dir.glob('*.txt')) if labels_dir.exists() else 0
+        status = "✅" if n_imgs > 0 and n_labels > 0 else "❌"
+        print(f"  {status} {key:5s}: images={n_imgs:6d} | labels={n_labels:6d} | {p}")
+        if n_imgs == 0:
+            raise RuntimeError(f"Не найдено изображений в {p}")
+
+    print(f"  nc    : {cfg.get('nc')}")
+    print(f"  names : {cfg.get('names')}")
+    return cfg
+
+
+cfg = check_dataset(DATA_YAML)
+
+
+# ============ 3. ЗАГРУЗКА МОДЕЛИ ============
+print(f"\n📦 Загрузка {MODEL_NAME}...")
+model = YOLO(MODEL_NAME)
+print(f"  task модели: {model.task}")   # должно быть 'detect'
+assert model.task == 'detect', "Модель не для детекции!"
+
+
+# ============ 4. ОБУЧЕНИЕ ============
+print("\n🚀 Старт обучения...")
+results = model.train(
+    data=str(DATA_YAML),
+    epochs=EPOCHS,
+    imgsz=IMGSZ,
+    batch=BATCH,
+    lr0=LR0,
+    lrf=0.01,               # конечный LR = lr0 * lrf
+    cos_lr=True,            # косинусный шедулер — стабильнее для файн-тюнинга
+    warmup_epochs=3.0,
+    patience=PATIENCE,
+    optimizer='AdamW',      # для файн-тюнинга часто лучше SGD
+    weight_decay=0.0005,
+    close_mosaic=10,        # выключить mosaic в последние 10 эпох
+    cache=CACHE,
+    workers=WORKERS,
+    device=DEVICE,
+    project=PROJECT_DIR,
+    name=RUN_NAME,
+    exist_ok=True,
+    verbose=True,
+    plots=True,
+)
+
+
+# ============ 5. ВАЛИДАЦИЯ ЛУЧШЕЙ МОДЕЛИ ============
+best_path = Path(PROJECT_DIR) / RUN_NAME / 'weights' / 'best.pt'
+if not best_path.exists():
+    raise FileNotFoundError(f"Не найден best.pt: {best_path}")
+
+print(f"\n📊 Валидация best.pt на val-сплите...")
+best_model = YOLO(str(best_path))
+metrics = best_model.val(
+    data=str(DATA_YAML),
+    split='val',
+    imgsz=IMGSZ,
+    batch=BATCH,
+    device=DEVICE,
+    plots=True,
+)
+print(f"  mAP50    : {metrics.box.map50:.4f}")
+print(f"  mAP50-95 : {metrics.box.map:.4f}")
+print(f"  Precision: {metrics.box.mp:.4f}")
+print(f"  Recall   : {metrics.box.mr:.4f}")
+
+
+# ============ 6. СОХРАНЕНИЕ ============
+shutil.copy2(best_path, FINAL_SAVE)
+print(f"\n✅ Готово. Модель: {Path(FINAL_SAVE).resolve()}")
+print(f"   Логи и графики: {(Path(PROJECT_DIR) / RUN_NAME).resolve()}")
